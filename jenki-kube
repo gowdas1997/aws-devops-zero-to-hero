@@ -1,0 +1,184 @@
+pipeline {
+    agent any
+    tools {
+        jdk 'java17'
+        maven 'maven3'
+    }
+    environment {
+        SCANNER_HOME= tool 'sonar-scanner'
+    }
+
+    stages {
+        stage('workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+        stage('git-checkout') {
+            steps {
+              git branch: 'main', credentialsId: 'git-cred', url: 'https://github.com/gowdas1997/Boardgame.git' 
+            }
+        }
+         stage('maven-compile') {
+            steps {
+               sh "mvn compile"
+            }
+        }
+         stage('mavaen-test') {
+            steps {
+               sh "mvn test"
+            }
+        }
+        stage('File System Scan') {
+            steps {
+                sh "trivy fs --format table -o trivy-fs-report.html ."
+            }
+        }
+         stage('sonar-analysys') {
+            steps {
+               withSonarQubeEnv('sonar') {
+                   sh ''' $SCANNER_HOME/bin/sonar-scanner \
+                   -Dsonar.projectName=Boardgame \
+                   -Dsonar.projectKey=Boardgame \
+                   -Dsonar.java.binaries=. '''     
+                   
+   
+                }
+            }
+        }
+        stage('sonar-qualitygates') {
+            steps {
+                script {
+               waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
+                }
+            }
+        }
+        stage('maven-package') {
+            steps {
+               sh "mvn clean package -DskipTests=true"
+            }
+        }
+        stage('docker-build image') {
+            steps {
+                script {
+               withDockerRegistry(credentialsId: 'docker-cred', tool: 'docker') {
+                    sh "docker build -t gowdas1997/boardgame-new ."
+                    }
+                }
+            }
+        }
+         stage('Docker Image Scan') {
+            steps {
+                sh "trivy image --format table -o trivy-image-report.html  gowdas1997/boardgame-new "
+            }
+        }
+        stage('docker-build image push') {
+            steps {
+                script {
+               withDockerRegistry(credentialsId: 'docker-cred', tool: 'docker') {
+                    sh "docker push gowdas1997/boardgame-new"
+                    }
+                }
+            }
+        }
+        stage('docker-deploy') {
+            steps {
+                script {
+               withDockerRegistry(credentialsId: 'docker-cred', tool: 'docker') {
+                    sh "docker run -d --name Board-Game2 -p 8086:8080 gowdas1997/boardgame-new "
+                    }
+                }
+            }
+        }
+   }
+}
+
+
+
+----------------------------------------------------------------------
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-deployment1
+  labels:
+    app: my-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+        - name: my-container
+          image: adijaiswal/boardshack:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SPRING_H2_CONSOLE_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: my-conf
+                  key: spring.h2.console.enabled
+            - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: my-conf
+                  key: spring.datasource.driverClassName
+            - name: SPRING_SQL_INIT_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: my-conf
+                  key: spring.sql.init.mode
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: my-sec
+                  key: spring.datasource.username
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: my-sec
+                  key: spring.datasource.password
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service1
+spec:
+  selector:
+    app: my-app
+  ports:
+    - protocol: TCP
+      port: 80         # Port on the service
+      targetPort: 8080 # Port on the container
+      nodePort: 30007  # Port on the node to expose
+  type: NodePort
+
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-conf
+  namespace: default
+data:
+  spring.h2.console.enabled: "true"
+  spring.datasource.url: "jdbc:h2:mem:testdb"
+  spring.datasource.driverClassName: "org.h2.Driver"
+  spring.sql.init.mode: "embedded"
+
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-sec
+  namespace: default
+type: Opaque
+data:
+  spring.datasource.username: "c2E="
+  spring.datasource.password: "cm9vdA=="
